@@ -67,7 +67,7 @@ AC_SUBST(ACLOCAL_AMFLAGS, "-I m4 -I common/m4")
 
 dnl set up gettext
 dnl the version check needs to stay here because autopoint greps for it
-AM_GNU_GETTEXT_VERSION([0.17])
+AM_GNU_GETTEXT_VERSION([0.19])
 AM_GNU_GETTEXT([external])
 AG_GST_GETTEXT([gst-plugins-bad-$GST_API_VERSION])
 
@@ -142,6 +142,11 @@ LT_LIB_M
 AC_SUBST(LIBM)
 
 AC_FUNC_MMAP
+
+dnl add LT_INIT macro
+LT_INIT
+
+AC_CONFIG_MACRO_DIRS([m4])
 
 dnl check for pthreads
 AX_PTHREAD
