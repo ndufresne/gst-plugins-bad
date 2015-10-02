@@ -808,6 +808,21 @@ else
   fi
 fi
 
+dnl check for DMABUF support
+HAVE_DRM_FOURCC_HEADER=no
+AC_CHECK_HEADER(libdrm/drm_fourcc.h,
+  HAVE_DRM_FOURCC_HEADER=yes, )
+
+HAVE_GST_ALLOCATORS=no
+PKG_CHECK_MODULES(GST_ALLOCATORS, gstreamer-allocators-1.0,
+  HAVE_GST_ALLOCATORS=yes, )
+
+if test "x$HAVE_DRM_FOURCC_HEADER" = "xyes" -a \
+  "x$HAVE_GST_ALLOCATORS" = "xyes" -a \
+  "x$HAVE_EGL" = "xyes"; then
+    GST_GL_HAVE_DMABUF=1
+fi
+
 dnl check if we can include both GL and GLES2 at the same time
 if test "x$HAVE_GL" = "xyes" -a "x$HAVE_GLES2" = "xyes"; then
   GL_INCLUDES="
@@ -1331,6 +1346,7 @@ GL_CONFIG_DEFINES="$GL_CONFIG_DEFINES
 #define GST_GL_HAVE_GLINTPTR $GST_GL_HAVE_GLINTPTR
 #define GST_GL_HAVE_GLSYNC $GST_GL_HAVE_GLSYNC
 #define GST_GL_HAVE_GLUINT64 $GST_GL_HAVE_GLUINT64
+#define GST_GL_HAVE_DMABUF $GST_GL_HAVE_DMABUF
 "
 
 AC_CONFIG_COMMANDS([gst-libs/gst/gl/gstglconfig.h], [
