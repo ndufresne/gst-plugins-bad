@@ -31,6 +31,10 @@
 #include "egl/gsteglimagememory.h"
 #endif
 
+#if GST_GL_HAVE_DMABUF
+#include <gst/allocators/gstdmabuf.h>
+#endif
+
 /**
  * SECTION:gstglupload
  * @short_description: an object that uploads to GL textures
@@ -484,7 +488,119 @@ static const UploadMethod _egl_image_upload = {
   &_egl_image_upload_release,
   &_egl_image_upload_free
 };
-#endif
+#endif /* GST_GL_HAVE_PLATFORM_EGL */
+
+#if GST_GL_HAVE_DMABUF
+struct DmabufUpload
+{
+  GstGLUpload *upload;
+  GstBuffer *outbuf;
+};
+
+static GstStaticCaps _dma_buf_upload_caps =
+GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE (GST_GL_MEMORY_VIDEO_FORMATS_STR));
+
+static gpointer
+_dma_buf_upload_new (GstGLUpload * upload)
+{
+  struct DmabufUpload *dmabuf = g_new0 (struct DmabufUpload, 1);
+  dmabuf->upload = upload;
+  return dmabuf;
+}
+
+static GstCaps *
+_dma_buf_upload_transform_caps (GstGLContext * context,
+    GstPadDirection direction, GstCaps * caps)
+{
+  GstCaps *ret = NULL;
+  if (direction == GST_PAD_SINK) {
+    ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+  } else {
+    gint i, n;
+    ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);
+    n = gst_caps_get_size (ret);
+    for (i = 0; i < n; i++) {
+      GstStructure *s = gst_caps_get_structure (ret, i);
+      gst_structure_remove_fields (s, "texture-target", NULL);
+    }
+  }
+  return ret;
+}
+
+static gboolean
+_dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
+    GstCaps * out_caps)
+{
+  struct DmabufUpload *image = impl;
+
+  /* dmabuf upload is only supported with EGL contexts. */
+  if (GST_IS_GL_CONTEXT_EGL (image->upload->context)
+      && gst_gl_context_check_feature (image->upload->context,
+          "EGL_KHR_image_base")
+      && gst_is_dmabuf_memory (gst_buffer_peek_memory (buffer, 0))) {
+
+    image->outbuf = gst_egl_image_memory_setup_dmabuf (image->upload->context,
+        &image->upload->priv->in_info, &image->upload->priv->out_info, buffer);
+
+    if (image->outbuf == NULL) {
+      GST_ERROR ("Error setting up EGL Image memory.");
+    } else {
+      static GQuark quark = 0;
+      if (G_UNLIKELY (quark == 0))
+        quark = g_quark_from_static_string ("GstGLUploadInputbuffer");
+      gst_buffer_ref (buffer);
+      gst_mini_object_set_qdata ((GstMiniObject *) image->outbuf,
+          quark, buffer, (GDestroyNotify) gst_buffer_unref);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static void
+_dma_buf_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
+    GstQuery * query)
+{
+  struct DmabufUpload *dmabuf = impl;
+
+  if (gst_gl_context_check_feature (dmabuf->upload->context,
+          "EXT_image_dma_buf_import")) {
+    /* Nothing to do for now. */
+  }
+}
+
+static GstGLUploadReturn
+_dma_buf_upload_perform (gpointer impl, GstBuffer * buffer, GstBuffer ** outbuf)
+{
+  struct DmabufUpload *dmabuf = impl;
+
+  if (!dmabuf->outbuf)
+    return GST_GL_UPLOAD_ERROR;
+
+  *outbuf = dmabuf->outbuf;
+
+  return GST_GL_UPLOAD_DONE;
+}
+
+static void
+_dma_buf_upload_free (gpointer impl)
+{
+  g_free (impl);
+}
+
+static const UploadMethod _dma_buf_upload = {
+  "Dmabuf",
+  0,
+  &_dma_buf_upload_caps,
+  &_dma_buf_upload_new,
+  &_dma_buf_upload_transform_caps,
+  &_dma_buf_upload_accept,
+  &_dma_buf_upload_propose_allocation,
+  &_dma_buf_upload_perform,
+  &_dma_buf_upload_free
+};
+
+#endif /* GST_GL_HAVE_DMABUF */
 
 struct GLUploadMeta
 {
@@ -869,6 +985,9 @@ static const UploadMethod _raw_data_upload = {
 static const UploadMethod *upload_methods[] = { &_gl_memory_upload,
 #if GST_GL_HAVE_PLATFORM_EGL
   &_egl_image_upload,
+#endif
+#if GST_GL_HAVE_DMABUF
+  &_dma_buf_upload,
 #endif
   &_upload_meta_upload, &_raw_data_upload
 };
