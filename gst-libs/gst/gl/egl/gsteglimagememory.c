@@ -26,6 +26,11 @@
 
 #include "gsteglimagememory.h"
 
+#if GST_GL_HAVE_DMABUF
+#include <gst/allocators/gstdmabuf.h>
+#include <libdrm/drm_fourcc.h>
+#endif
+
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_EGL_IMAGE_MEMORY);
 #define GST_CAT_DEFAULT GST_CAT_EGL_IMAGE_MEMORY
 
@@ -312,6 +317,215 @@ gst_eglimage_to_gl_texture_upload_meta (GstVideoGLTextureUploadMeta *
 
   return TRUE;
 }
+
+#if GST_GL_HAVE_DMABUF
+
+/*
+ * GStreamer format descriptions differ from DRM formats.
+ * RGBx becomes XRGB.
+ */
+static int
+_drm_fourcc_from_info (GstVideoInfo * info)
+{
+  GstVideoFormat gst_format = GST_VIDEO_INFO_FORMAT (info);
+  GST_DEBUG ("Getting DRM fourcc for : %s",
+      gst_video_format_to_string (gst_format));
+
+  switch (gst_format) {
+    case GST_VIDEO_FORMAT_RGB16:
+      return DRM_FORMAT_RGB565;
+    case GST_VIDEO_FORMAT_RGBA:
+      return DRM_FORMAT_ARGB8888;
+    case GST_VIDEO_FORMAT_BGRx:
+    case GST_VIDEO_FORMAT_BGRA:
+    case GST_VIDEO_FORMAT_RGBx:
+      return DRM_FORMAT_XBGR8888;
+    case GST_VIDEO_FORMAT_xRGB:
+      return DRM_FORMAT_ABGR8888;
+    case GST_VIDEO_FORMAT_GRAY8:
+      return fourcc_code ('R', '8', ' ', ' ');
+    case GST_VIDEO_FORMAT_YUY2:
+    case GST_VIDEO_FORMAT_UYVY:
+      return fourcc_code ('G', 'R', '8', '8');
+    default:
+      GST_ERROR ("Single plane DMABUF format unsupported.");
+      return -1;
+  }
+}
+
+static EGLImageKHR
+_egl_image_from_dmabuf (GstGLContext * context,
+    GstVideoInfo * in_info, GstBuffer * in_buffer, int fourcc, int plane)
+{
+  int i;
+  gint atti = 0;
+  EGLint attribs[13];
+  EGLImageKHR img = EGL_NO_IMAGE_KHR;
+  GstGLContextEGL *ctx_egl = GST_GL_CONTEXT_EGL (context);
+
+  GST_DEBUG ("fourcc %.4s (%d) plane %d (%dx%d)",
+      (char *) &fourcc, fourcc, plane,
+      GST_VIDEO_INFO_COMP_WIDTH (in_info, plane),
+      GST_VIDEO_INFO_COMP_HEIGHT (in_info, plane));
+
+  attribs[atti++] = EGL_WIDTH;
+  attribs[atti++] = GST_VIDEO_INFO_COMP_WIDTH (in_info, plane);
+  attribs[atti++] = EGL_HEIGHT;
+  attribs[atti++] = GST_VIDEO_INFO_COMP_HEIGHT (in_info, plane);
+
+  attribs[atti++] = EGL_LINUX_DRM_FOURCC_EXT;
+  attribs[atti++] = fourcc;
+
+  attribs[atti++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+  attribs[atti++] =
+      gst_dmabuf_memory_get_fd (gst_buffer_peek_memory (in_buffer, 0));
+  attribs[atti++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+  attribs[atti++] = GST_VIDEO_INFO_PLANE_OFFSET (in_info, plane);
+  attribs[atti++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+  attribs[atti++] = GST_VIDEO_INFO_PLANE_STRIDE (in_info, plane);
+
+  attribs[atti] = EGL_NONE;
+
+  for (i = 0; i < atti; i++)
+    GST_LOG ("attr %i: %08X", i, attribs[i]);
+
+  g_assert (atti == 12);
+
+  img = ctx_egl->eglCreateImage (ctx_egl->egl_display, EGL_NO_CONTEXT,
+      EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
+
+  if (!img) {
+    GST_ERROR ("eglCreateImage: %s",
+        gst_gl_context_egl_get_error_string (eglGetError ()));
+    return EGL_NO_IMAGE_KHR;
+  }
+  return img;
+}
+
+static GstGLMemory *
+_gl_memory_from_dmabuf (GstGLContext * context,
+    GstVideoInfo * in_info, GstVideoInfo * out_info,
+    GstBuffer * in_buffer, int fourcc, int plane)
+{
+  const GstGLFuncs *gl = context->gl_vtable;
+  GstGLMemory *out_gl_mem = NULL;
+  GstGLContextEGL *ctx_egl = GST_GL_CONTEXT_EGL (context);
+
+  EGLImageKHR img =
+      _egl_image_from_dmabuf (context, in_info, in_buffer, fourcc, plane);
+
+  if (img == EGL_NO_IMAGE_KHR)
+    return NULL;
+
+  out_gl_mem =
+      (GstGLMemory *) gst_gl_memory_alloc (context, GST_GL_TEXTURE_TARGET_2D,
+      NULL, out_info, plane, NULL);
+
+  /* Bind DMABUF to GL Texture */
+  gl->BindTexture (GL_TEXTURE_2D, out_gl_mem->tex_id);
+  gl->EGLImageTargetTexture2D (GL_TEXTURE_2D, img);
+  ctx_egl->eglDestroyImage (ctx_egl->egl_display, img);
+
+  return out_gl_mem;
+}
+
+GstBuffer *
+gst_egl_image_memory_setup_dmabuf (GstGLContext * context,
+    GstVideoInfo * in_info, GstVideoInfo * out_info, GstBuffer * in_buffer)
+{
+  GstBuffer *out_buffer = NULL;
+  GstVideoMeta *meta = NULL;
+
+  gint n_mem = gst_buffer_n_memory (in_buffer);
+  meta = gst_buffer_get_video_meta (in_buffer);
+  if (!meta) {
+    GST_ERROR ("Could not get video meta from buffer.");
+    return NULL;
+  }
+  GST_DEBUG ("n_mem %d n_planes %d format: %s",
+      n_mem, meta->n_planes, gst_video_format_to_string (meta->format));
+
+  for (int i = 0; i < meta->n_planes; i++)
+    GST_DEBUG ("meta: offset[%d]: %ld, stride[%d]: %d",
+        meta->n_planes, meta->offset[i], meta->n_planes, meta->stride[i]);
+
+  if (n_mem == 1 && meta->n_planes == 1) {
+    GstGLMemory *gl_mem;
+    int fourcc = _drm_fourcc_from_info (in_info);
+    if (fourcc == -1)
+      return NULL;
+    gl_mem = _gl_memory_from_dmabuf (context, in_info,
+        out_info, in_buffer, fourcc, 0);
+    if (!gl_mem)
+      return NULL;
+    out_buffer = gst_buffer_new ();
+    gst_buffer_insert_memory (out_buffer, 0, (GstMemory *) gl_mem);
+  } else if (n_mem == 1 && meta->n_planes > 1) {
+    GstVideoFormat gst_format = GST_VIDEO_INFO_FORMAT (in_info);
+    switch (gst_format) {
+      case GST_VIDEO_FORMAT_NV12:
+      case GST_VIDEO_FORMAT_NV21:
+      {
+        GstGLMemory *plane1 =
+            _gl_memory_from_dmabuf (context, in_info, out_info,
+            in_buffer, fourcc_code ('R', '8', ' ', ' '), 0);
+        GstGLMemory *plane2 =
+            _gl_memory_from_dmabuf (context, in_info, out_info,
+            in_buffer, fourcc_code ('G', 'R', '8', '8'), 1);
+
+        if (!plane1 || !plane2) {
+          if (plane1)
+            gst_memory_unref ((GstMemory *) plane1);
+          if (plane2)
+            gst_memory_unref ((GstMemory *) plane2);
+          return NULL;
+        }
+        out_buffer = gst_buffer_new ();
+        gst_buffer_insert_memory (out_buffer, 0, (GstMemory *) plane1);
+        gst_buffer_insert_memory (out_buffer, 1, (GstMemory *) plane2);
+        break;
+      }
+      case GST_VIDEO_FORMAT_I420:
+      case GST_VIDEO_FORMAT_Y41B:
+      case GST_VIDEO_FORMAT_Y42B:
+      case GST_VIDEO_FORMAT_YV12:
+      {
+        GstGLMemory *plane1 =
+            _gl_memory_from_dmabuf (context, in_info, out_info,
+            in_buffer, fourcc_code ('R', '8', ' ', ' '), 0);
+
+        GstGLMemory *plane2 =
+            _gl_memory_from_dmabuf (context, in_info, out_info,
+            in_buffer, fourcc_code ('R', '8', ' ', ' '), 1);
+
+        GstGLMemory *plane3 =
+            _gl_memory_from_dmabuf (context, in_info, out_info,
+            in_buffer, fourcc_code ('R', '8', ' ', ' '), 2);
+
+        if (!plane1 || !plane2 || !plane3) {
+          if (plane1)
+            gst_memory_unref ((GstMemory *) plane1);
+          if (plane2)
+            gst_memory_unref ((GstMemory *) plane2);
+          if (plane3)
+            gst_memory_unref ((GstMemory *) plane3);
+          return NULL;
+        }
+        out_buffer = gst_buffer_new ();
+        gst_buffer_insert_memory (out_buffer, 0, (GstMemory *) plane1);
+        gst_buffer_insert_memory (out_buffer, 1, (GstMemory *) plane2);
+        gst_buffer_insert_memory (out_buffer, 2, (GstMemory *) plane3);
+        break;
+      }
+      default:
+        GST_ERROR ("Unsupported multi planar format : %s",
+            gst_video_format_to_string (gst_format));
+        return NULL;
+    }
+  }
+  return out_buffer;
+}
+#endif /* GST_GL_HAVE_DMABUF */
 
 gboolean
 gst_egl_image_memory_setup_buffer (GstGLContext * ctx, GstVideoInfo * info,
