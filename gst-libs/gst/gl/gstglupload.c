@@ -515,6 +515,7 @@ _dma_buf_upload_transform_caps (GstGLContext * context,
   GstCaps *ret = NULL;
   if (direction == GST_PAD_SINK) {
     ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
   } else {
     gint i, n;
     ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY);

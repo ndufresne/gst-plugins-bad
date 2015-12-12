@@ -339,7 +339,8 @@ _drm_fourcc_from_info (GstVideoInfo * info)
     case GST_VIDEO_FORMAT_BGRx:
     case GST_VIDEO_FORMAT_BGRA:
     case GST_VIDEO_FORMAT_RGBx:
-      return DRM_FORMAT_XBGR8888;
+      //return DRM_FORMAT_XBGR8888;
+      return DRM_FORMAT_BGRA8888;
     case GST_VIDEO_FORMAT_xRGB:
       return DRM_FORMAT_ABGR8888;
     case GST_VIDEO_FORMAT_GRAY8:
