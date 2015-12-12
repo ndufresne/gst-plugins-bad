@@ -417,9 +417,8 @@ _gl_memory_from_dmabuf (GstGLContext * context,
   if (img == EGL_NO_IMAGE_KHR)
     return NULL;
 
-  out_gl_mem =
-      (GstGLMemory *) gst_gl_memory_alloc (context, GST_GL_TEXTURE_TARGET_2D,
-      NULL, out_info, plane, NULL);
+  out_gl_mem = (GstGLMemory *) gst_gl_memory_alloc (context, NULL, out_info,
+      plane, NULL);
 
   /* Bind DMABUF to GL Texture */
   gl->BindTexture (GL_TEXTURE_2D, out_gl_mem->tex_id);
