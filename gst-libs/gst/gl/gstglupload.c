@@ -534,8 +534,7 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
   struct DmabufUpload *image = impl;
 
   /* dmabuf upload is only supported with EGL contexts. */
-  if (GST_IS_GL_CONTEXT_EGL (image->upload->context)
-      && gst_gl_context_check_feature (image->upload->context,
+  if (gst_gl_context_check_feature (image->upload->context,
           "EGL_KHR_image_base")
       && gst_is_dmabuf_memory (gst_buffer_peek_memory (buffer, 0))) {
 
