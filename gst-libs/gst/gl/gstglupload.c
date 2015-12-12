@@ -582,6 +582,11 @@ _dma_buf_upload_perform (gpointer impl, GstBuffer * buffer, GstBuffer ** outbuf)
 }
 
 static void
+_dma_buf_upload_release (gpointer impl, GstBuffer * buffer)
+{
+}
+
+static void
 _dma_buf_upload_free (gpointer impl)
 {
   g_free (impl);
@@ -596,6 +601,7 @@ static const UploadMethod _dma_buf_upload = {
   &_dma_buf_upload_accept,
   &_dma_buf_upload_propose_allocation,
   &_dma_buf_upload_perform,
+  &_dma_buf_upload_release,
   &_dma_buf_upload_free
 };
 
